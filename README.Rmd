@@ -1,35 +1,38 @@
-NEON-stream-morphology repo
-================
+---
+title: "NEON-stream-morphology repo"
+output: github_document
+---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
-<!-- ****** Description ****** -->
-Description
------------
 
-This repository contains R scripts used to generate NEON's Stream Morphology data product <http://data.neonscience.org/data-product-view?dpCode=DP4.00131.001>. Scripts are provided for reference and for use by the external community.
+```{r, echo = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "README-"
+)
+
+```
+<!-- ****** Description ****** -->
+## Description
+This repository contains R scripts used to generate NEON's Stream Morphology data product http://data.neonscience.org/data-product-view?dpCode=DP4.00131.001. Scripts are provided for reference and for use by the external community.  
 
 <!-- ****** Usage ****** -->
-Usage
------
-
-This repo contains a subfolder, */Post-Processed\_R\_Scripts*, where R scripts (geoMorphTransectMetrics.RMD & geomorphThalwegMetrics.RMD) utilized for post-processing of NEON stream morphology data can be accessed.
+## Usage
+This repo contains a subfolder, */Post-Processed_R_Scripts*, where R scripts (geoMorphTransectMetrics.RMD & geomorphThalwegMetrics.RMD) utilized for post-processing of NEON stream morphology data can be accessed. 
 
 <!-- ****** Acknowledgements ****** -->
-Credits & Acknowledgements
---------------------------
-
+## Credits & Acknowledgements
 The National Ecological Observatory Network is a project solely funded by the National Science Foundation and managed under cooperative agreement by Battelle. Any opinions, findings, and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the National Science Foundation.
 
-<a href="http://www.neonscience.org/"> <img src="logo.png" width="300px" /> </a>
+<a href="http://www.neonscience.org/">
+<img src="logo.png" width="300px" />
+</a>
 
 <!-- ****** License ****** -->
-License
--------
-
+## License
 GNU AFFERO GENERAL PUBLIC LICENSE Version 3, 19 November 2007
 
 <!-- ****** Disclaimer ****** -->
-Disclaimer
-----------
-
+## Disclaimer
 *Information and documents contained within this repository are available as-is. Codes or documents, or their use, may not be supported or maintained under any program or service and may not be compatible with data currently available from the NEON Data Portal.*
