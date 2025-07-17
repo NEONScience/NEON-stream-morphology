@@ -24,10 +24,11 @@
 #                            reference point coordinates.
 #  N. Harrison (2018-02-09): Added staff gauge calculations.
 #  N. Harrison (2018-08-27): Updated script to import a new survey .csv file that contains raw easting, northing, and elevation coordinates.  Transects metrics are now calculated using raw values to avoid any potential transformation bias incorporated during post-processing.  Added calculations to offset discharge cross-section gauge height values in instances of negative stage transformations.   
-#  N.Harrison (2020-02-28):  Removed gsub functionality to automatically select NorthStart, EastStart, and ReferenceDistance coordinates (it never really worked) - user must now select these points manually for each transect; added feature to transect plots where field bankfull calls are highlighted to validate bankfull width calculations.
-#  N.Harrison (2020-03-31):  Created template script; added API functionality to download and read in data from the NEON Data Portal via neonUtilities package; removed staff gauge correction lines for discharge transects (this is now done in the hydrologic controls script); updated @param text
-#  N.Harrison (2021-06-14):  Converted script from .RMD to .R format
-# N. Harrison (2025-06-05):  Updated outputs and workflows to match new geo_transectBankfullWidths_in ingest  table
+#  N. Harrison (2020-02-28): Removed gsub functionality to automatically select NorthStart, EastStart, and ReferenceDistance coordinates (it never really worked) - user must now select these points manually for each transect; added feature to transect plots where field bankfull calls are highlighted to validate bankfull width calculations.
+#  N. Harrison (2020-03-31): Created template script; added API functionality to download and read in data from the NEON Data Portal via neonUtilities package; removed staff gauge correction lines for discharge transects (this is now done in the hydrologic controls script); updated @param text
+#  N. Harrison (2021-06-14): Converted script from .RMD to .R format
+#  N. Harrison (2025-06-05): Updated outputs to produce geo_transectBankfullWidths_in ingest table
+#  N. Harrison (2025-07-17): Updated outputs to produce surveyPts_in ingest table 
 
 #########################################################################################################################
 
@@ -1165,7 +1166,7 @@ if(SurveyedDSR==TRUE){
   
 } else {"There is no data associated with the 'Transect_DSR' mapCode"}
 
-############# Create BF width and datOut dataframes  ##################################################################################################
+############# Create transectBankfullWidth DF  ##################################################################################################
 
 transectBankfullWidths<-data.frame(matrix(nrow=1,ncol=16))
 names(transectBankfullWidths)=c("Transect_AP1","Transect_AP2","Transect_AP3","Transect_AP4","Transect_AP5","Transect_AP6","Transect_AP7","Transect_AP8","Transect_AP9","Transect_AP10","Transect_USR","Transect_DSR","Transect_S1","Transect_S2","Transect_DSC","Transect_DSC2")
@@ -1234,15 +1235,13 @@ if(SurveyedDSC2){
   transectBankfullWidths$Transect_DSC2<-as.numeric(DSCXS2Bankfull)
 }else{transectBankfullWidths$Transect_DSC2<-NA}
 
-############################# Read and write to temporary tables  ############################################################################################################################
+############################# Create ingest tables  ############################################################################################################################
 
-#Reads in geoSummaryTable and geo_transectBankfullWidths from N drive. 
+#Reads in geoSummaryTable from N drive.
 geoSummaryTable <- read.csv(paste(surveyFilePath,'Ingest_Tables/',domainID,'_',siteID,'_geo_surveySummary_',surveyDate,'.csv',sep=""))
-geoTransectBankfullWidths<-read.csv(paste(surveyFilePath,'Ingest_Tables/',domainID,'_',siteID,'_geo_transectBankfullWidths_',surveyDate,'.csv',sep=""))
-      
-#extract endDate from GEO summary table
-surveyEndDate<-geoSummaryTable$endDate
 
+#extract endDate from GEO summary table and check against surveyEndDate
+surveyEndDate<-geoSummaryTable$endDate
 print(surveyEndDate)
 print(surveyDate)
 
@@ -1253,11 +1252,18 @@ transectBankfullWidths<- transectBankfullWidths[ , colSums(is.na(transectBankful
 meanBankfullWidth<-round(sum(transectBankfullWidths[1,])/ncol(transectBankfullWidths),3)
 print(meanBankfullWidth)
 
-#Adds BF width value to geoSummaryTable and writes the DF back to the N Drive.
-geoSummaryTable$meanBankfullWidth<-meanBankfullWidth
-write.csv(geoSummaryTable,paste(surveyFilePath,"Ingest_Tables/",domainID,"_",siteID,"_geo_surveySummary_",surveyDate,".csv",sep=""),row.names=F)
-
-#adds data to geoTransectBankfullWidths DF.
+#Creates a geoTransectBankfullWidths table for ingest.
+geoTransectBankfullWidths <-data.frame(uid=NA,
+                                       locationID=NA,
+                                       startDate=NA, 
+                                       endDate=NA,
+                                       eventID=NA,
+                                       transectID=NA,
+                                       bankfullWidth=NA,
+                                       processedSurveyVersion=NA,
+                                       remarks=NA,
+                                       dataQF=NA)
+      
 i<-ncol(transectBankfullWidths)
 geoTransectBankfullWidths[i, ]<-NA
 
@@ -1266,9 +1272,10 @@ geoTransectBankfullWidths$startDate<-geoSummaryTable$startDate
 geoTransectBankfullWidths$endDate<-geoSummaryTable$endDate
 geoTransectBankfullWidths$eventID<-geoSummaryTable$eventID  
 geoTransectBankfullWidths$transectID<-colnames(transectBankfullWidths)
-geoTransectBankfullWidths$bankfullWidth<-as.numeric(c(transectBankfullWidths[1,]))
-geoTransectBankfullWidths$bankfullWidth<-round(geoTransectBankfullWidths$bankfullWidth,3)
-geoTransectBankfullWidths$processedSurveyVersion<-geoTransectBankfullWidths$processedSurveyVersion[1]
+geoTransectBankfullWidths$bankfullWidth<-round(as.numeric(c(transectBankfullWidths[1,])),3)
+geoTransectBankfullWidths$processedSurveyVersion<-geoSummaryTable$processedSurveyVersion
+geoTransectBankfullWidths$remarks<-NA
+geoTransectBankfullWidths$dataQF<-NA
 
 print(nrow(geoTransectBankfullWidths)) #ensure that there are 8 bankfull widths
 
@@ -1283,72 +1290,72 @@ if(length(which(!is.na(geoTransectBankfullWidths$bankfullWidth)))==8){
 plot_ly(data=geoTransectBankfullWidths,x=~transectID, y=~bankfullWidth, name='Bankfull Widths', type='bar', text=~transectID,marker=(list(color='orange',line=(list(color='black',width=1)))))%>%
   layout(title = paste(siteID, "Bankfull Widths",surveyDate))
 
-#writes out geoTransectBankfullWidths DF to N drive.
+#Creates a new surveyPts table for ingest, using only "Transect_DSC" and "Gauge" mapCodes. 
+surveyPts_in<-data.frame(uid = NA,
+                         domainID = NA,
+                         locationID = NA,
+                         startDate = NA,
+                         surveyEndDate = NA,
+                         eventID = NA,
+                         surveyPtID = NA,
+                         relativeEasting = NA,
+                         relativeNorthing = NA,
+                         relativeHeight = NA,
+                         mapCode = NA,
+                         processedSurveyVersion = NA,
+                         remarks = NA,
+                         dataQF = NA)
+
+n<-sum(surveyPtsDF$mapCode=="Transect_DSC") + 1 
+surveyPts_in[n, ]<-NA
+
+surveyPts_in$uid<-NA
+surveyPts_in$domainID<-domainID
+surveyPts_in$locationID<-siteID
+surveyPts_in$startDate<-geoSummaryTable$startDate
+surveyPts_in$surveyEndDate<-geoSummaryTable$endDate
+surveyPts_in$eventID<-geoSummaryTable$eventID
+surveyPts_in$surveyPtID<-surveyPtsDF$name[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+surveyPts_in$relativeEasting<-surveyPtsDF$E[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+surveyPts_in$relativeNorthing<-surveyPtsDF$N[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+surveyPts_in$relativeHeight<-surveyPtsDF$H[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+surveyPts_in$mapCode<-surveyPtsDF$mapCode[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+surveyPts_in$processedSurveyVersion<-geoSummaryTable$processedSurveyVersion
+surveyPts_in$remarks<-NA
+surveyPts_in$dataQF<-NA
+
+############################# write out tables  ############################################################################################################################
+
+#writes out geoTransectBankfullWidths table to the N drive. 
 write.csv(geoTransectBankfullWidths,paste(surveyFilePath,"Ingest_Tables/",domainID,"_",siteID,"_geo_transectBankfullWidths_",surveyDate,".csv",sep=""),row.names=F)
 
-#Save the global environment as an .rda file.
-save.image(file = paste("N:/Science/AQU/Geomorphology_Survey_Data/",domainID,"/",domainID,"_",siteID,"_",surveyDate,"/",siteID,"_",surveyDate,"_geo_transectBankfullWidths_in.RData",sep=""))
+#Adds BF width value to geoSummaryTable and writes this table to the N drive.
+geoSummaryTable$meanBankfullWidth<-meanBankfullWidth
+write.csv(geoSummaryTable,paste(surveyFilePath,"Ingest_Tables/",domainID,"_",siteID,"_geo_surveySummary_",surveyDate,".csv",sep=""),row.names=F)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-############################# Create dataOut dataframe ############################################################################################################################
-
-#Creates an output dataframe that lists bankfull widths for all transects.
-dataOut<-data.frame(matrix(nrow=sum(!is.na(transectBankfullWidths[1,])),ncol=9))
-
-names(dataOut)=c("uid", "locationID", "startDate", "endDate", "eventID", "transectID", "bankfullWidth", "processedSurveyVersion", "dataQF")
-
-dataOut$uid<-"" #leave blank
-dataOut$locationID<-siteID
-dataOut$startDate<-surveyEndDate
-dataOut$endDate<-surveyEndDate
-dataOut$eventID<-eventID
-dataOut$transectID<-colnames(transectBankfullWidths) 
-dataOut$bankfullWidth<-round(as.numeric(paste(transectBankfullWidths[1,])),3)
-dataOut$processedSurveyVersion<-"vG" #current post-processing version is vG 
-dataOut$dataQF<-"" #leave blank
-
-#Checks that there are 8 BF width in the dataOut dataframe. 
-if(length(which(!is.na(dataOut$bankfullWidth)))==8){
-  print("Success!  There are 8 bankfull width values contained in the dataOut dataframe!")  
-} else {
-  warning("There are NOT 8 bankfull width values contained in the dataOut dataframe!")
-}
-
-#Plots bankfull width data per transect as a final check.  
-plot_ly(data=dataOut,x=~transectID, y=~bankfullWidth, name='Bankfull Widths', type='bar', text=~transectID,marker=(list(color='orange',line=(list(color='black',width=1)))))%>%
-  layout(title = paste(siteID, "Bankfull Widths",surveyDate))
-
-#Append dataOut df to newSurveyTransectBankfullWidths table 
-newSurveyTransectBankfullWidths<-rbind(newSurveyTransectBankfullWidths,dataOut)
-
-#write newSurveyTransectBankfullWidths back out (temporary location)
-write.csv(newSurveyTransectBankfullWidths,'N:/Science/AQU/Geomorphology_Survey_Data/newIngestOutputs/Geo_tablesToIngest/newSurveyTransectBankfullWidths.csv',row.names=F)
-
-#Writes out dataOut dataframe to working directory.  
-write.csv(dataOut,paste(wdir,"/",domainID,"_",siteID,"_geo_transectBankfullWidths_in_",surveyDate,".csv",sep=""),row.names=F)
+#Writes surveyPts_in table to the N drive. 
+write.csv(surveyPts_in,paste(surveyFilePath,"Ingest_Tables/",domainID,"_",siteID,"_geo_surveyPoints_",surveyDate,".csv",sep=""),row.names=F)
 
 #Save the global environment as an .rda file.
 save.image(file = paste("N:/Science/AQU/Geomorphology_Survey_Data/",domainID,"/",domainID,"_",siteID,"_",surveyDate,"/",siteID,"_",surveyDate,"_geo_transectBankfullWidths_in.RData",sep=""))
 
-# #Writes out dataOut dataframe to ECS L4 directory for data upload.  
-# ECSdir<-paste('N:/Science/AQU/Geomorphology_Survey_Data/',domainID,"/",domainID,"_",siteID,"_",surveyDate,"/ECS/L4",sep="")
-# write.csv(dataOut,paste(ECSdir,"/",domainID,"_",siteID,"_geo_transectBankfullWidths_in_",surveyDate,".csv",sep=""),row.names=F)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
