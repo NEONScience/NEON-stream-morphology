@@ -1,0 +1,1343 @@
+#####################################################
+@title
+geoThalwegMetricsAndTableCreation2025
+
+@author
+Rachel Krauss \email{rkrauss@battelleecology.org}
+Hannah Schartel \email{hschartel@battelleecology.org}
+
+@description
+This script calculates the following thalweg metrics 
+1. Total thalweg lengthM (m)
+2. Thalweg lengthM by habitat ID
+3. Percent length by habitat type
+4. Thalweg lengthM between S1 and S2  
+5. Habitat units between S1 and S2 
+6. SlopeM for the thalweg and between S1 and S2
+7. Percentage of dry reach using thalweg lengths (if applicable)
+8. Area of the habitat units
+9. Number of geomorphology features
+
+The code then creates shapefiles with standardized formatting. Finally, it 
+creates the tables that are used for ingest. 
+
+@parmam
+All the inputs are arcGIS shapefiles created from the raw total station survey data and trimble GPS files. See "set your variables" for descriptions of each input
+
+@return
+1.Six-seven csvs depending on the inputs that contain the thalweg metrics listed in the description
+2.Four- six shapefiles depending on the inputs
+
+@changelog
+R. Krauss (2017-12-11)
+original creation
+
+R. Swanson (2023-09-21)
+Updated to new spatial data packages (terra, sf)
+Included more comments
+
+H. Schartel (2025-01-02) 
+- Includes updates made for 2024 data product re-structuring, including the creation of ingested data tables
+- S1/S2 metrics will use s1_THL and S2_THL points instead of specific S1_base/S2_base points
+- Addition of channel sinuosity calculation
+- Zip files
+#########################################################
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+# Load packages
+require(plyr)
+require(tidyverse)
+require(sf)
+require(terra)
+require(tidyterra)
+library(zip)
+`%notin%` <- Negate(`%in%`)
+```
+
+## IMPORT VARIABLES AND FILES
+
+### Set your variables
+```{r variables}
+## Use either this chunk or the one below to setup your variables. This chunk can be modified based on local file storage and does not rely on separate lookup table. You will be able to run the processing code, but table creation will be limited.  
+
+# [USER INPUT REQUIRED]
+#filePath <- "" #location where the shapefiles are stored
+#outPath <- ""  #output location
+#site <- "MCRA" #4 letter site code
+#domain <- "D16" #DXX, for example D01, D11
+#surveyDate <- "20191213" # YYYYMMDD see geo_surveySummary data table
+
+# Files you always need to include
+#thalwegShapefileName <- "thalweg"  #thalweg polyline shapefile name
+#habitatShapefileName <- "habitat"  #habitat polygon shapefile name
+#surveyShapefileName <- "PRIN_surveyPts"  #survey point shapefile that includes s1 & s2, staff gauge, and transect points
+#sensorBoxShapefileName <- "sensorBox" #polygon shapefile of area in between the sensors
+
+# Files that may or may not exist at the site.  Run this line, even if the files do not exist
+#geoFeaturesShapefileName <- "geomorphicFeatures" #polygon shapefile that includes of MCBs, ISLs, downed logs, beaver dams
+
+# Define the name of the end THL points. Downstream is usually "THL" but double check
+#downStreamTHL <- "" #ex. "THL"
+#upStreamTHL <- "" #ex. "THL299"
+```
+
+### Setup variables from input directory
+```{r variables2}
+## This chunk uses a separate lookup table to pull in all the variables based off of the survey ID.
+
+# [USER INPUT REQUIRED] Set correct surveyID for survey to be processed ("SITE_YEAR")
+surveyID <- "LECO_2024"
+
+# Read in lookup table 
+siteDirectory <- read.csv('N:/Science/AQU/Geomorphology_Survey_Data/inputDirectory.csv', head = T, sep = ",", stringsAsFactors = F)
+
+# Retrieve variables from siteDirectory lookup table 
+filePath <- siteDirectory$filePath[which(siteDirectory$surveyID == surveyID)]
+outPathZip <-  siteDirectory$outPathZip[which(siteDirectory$surveyID == surveyID)]
+outPathTables <- siteDirectory$outPathTables[which(siteDirectory$surveyID == surveyID)]
+domain <-  siteDirectory$domain[which(siteDirectory$surveyID == surveyID)]
+surveyDate <-  siteDirectory$surveyDate[which(siteDirectory$surveyID == surveyID)]
+site <- siteDirectory$site[which(siteDirectory$surveyID == surveyID)]
+utmZone <- siteDirectory$utmzone[which(siteDirectory$surveyID == surveyID)]
+geodeticDatum <- siteDirectory$geodeticDatum[which(siteDirectory$surveyID == surveyID)]
+
+thalwegShapefileName <- siteDirectory$thalwegShapefileName[which(siteDirectory$surveyID == surveyID)]
+habitatShapefileName <- siteDirectory$habitatShapefileName[which(siteDirectory$surveyID == surveyID)]
+surveyShapefileName <- siteDirectory$surveyShapefileName[which(siteDirectory$surveyID == surveyID)]
+sensorBoxShapefileName <- siteDirectory$sensorBoxShapefileName[which(siteDirectory$surveyID == surveyID)]
+geoFeaturesShapefileName <- siteDirectory$geoFeaturesShapefileName[which(siteDirectory$surveyID == surveyID)] 
+
+upStreamTHL <- siteDirectory$upStreamTHL[which(siteDirectory$surveyID == surveyID)]
+downStreamTHL <- siteDirectory$downStreamTHL[which(siteDirectory$surveyID == surveyID)]
+entireSurveyDry <- ifelse(siteDirectory$entireSurveyDry[which(siteDirectory$surveyID == surveyID)] == "Y","Y","N")
+transformationError <- siteDirectory$transformationError[which(siteDirectory$surveyID == surveyID)]
+```
+
+### Load additional files
+``` {r additional files}
+# Additional files use base filePath from siteDirectory lookup table
+
+# Read in Fulcrum data
+if (grepl("Processed_Data", filePath)) {
+  FulcrumInputPath <- sub("Processed_Data", "Fulcrum_Data/", filePath)
+} else if (grepl("Processed_Survey_Data", filePath)) {
+  FulcrumInputPath <- sub("Processed_Survey_Data", "Fulcrum_Data/", filePath)
+}
+# Read in Fulcrum data for start/end times and samplingProtocolVersion
+fulcrumData <- read.csv(paste(FulcrumInputPath,'aos_stream_morphology_prod.csv', sep = ""), stringsAsFactors = FALSE)
+fulcrumStartDate <- fulcrumData$start_date
+fulcrumEndDate <- fulcrumData$end_date
+#fulcrumSurveyEndDate <- fulcrumData$survey_end_date
+samplingProtocolVersion <- fulcrumData$samplingprotocolversion
+
+# Pull in Trimble data if trimbleFileName in siteDirectory exists (usually only for D18/19 sites)
+trimbleFileName <- siteDirectory$trimbleFileName[which(siteDirectory$surveyID == surveyID)]
+if (trimbleFileName != "") {
+  trimbleData <- read.csv(paste0(trimbleFileName, ".csv"))
+  rawTrimbleFilePath <- siteDirectory$rawTrimbleFilePath[which(siteDirectory$surveyID == surveyID)]
+  }
+
+# Read in raw survey data
+if (grepl("Processed_Data", filePath)) {
+  rawFilePath <- sub("Processed_Data", "Raw_Survey_Data", filePath)
+} else if (grepl("Processed_Survey_Data", filePath)) {
+  rawFilePath <- sub("Processed_Survey_Data", "Raw_Survey_Data", filePath)
+}
+rawSurveyDataFileName <- paste0(siteDirectory$rawDataFileName[which(siteDirectory$surveyID == surveyID)], ".csv")
+fullFilePath <- file.path(rawFilePath, rawSurveyDataFileName)
+rawSurveyData <- read.csv(fullFilePath, head = T, sep = ";", stringsAsFactors = FALSE)
+
+# Read in as a comma delimited file for some sites
+if(ncol(rawSurveyData) == 1){
+  rawSurveyData <- read.csv(fullFilePath, head = T, sep = ",", stringsAsFactors = FALSE)
+}
+```
+
+### Load shapefiles
+```{r load the shapefiles}
+# Use terra:vect to pull in all the inputs
+thalweg <- terra::vect(paste0(filePath, "/", thalwegShapefileName, ".shp"))
+rawHabitat <- terra::vect(paste0(filePath, "/", habitatShapefileName, ".shp"))
+surveyPts <- terra::vect(paste0(filePath, "/", surveyShapefileName, ".shp"))
+sensorBox <-terra::vect(paste0(filePath, "/", sensorBoxShapefileName, ".shp"))
+if (file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep = "/"), ".shp", sep = ""))){
+  geoFeatures <- terra::vect(paste0(filePath, "/", geoFeaturesShapefileName, ".shp"))
+}
+
+# Plot the shapefiles to make sure they all overlay
+plot(thalweg)
+plot(rawHabitat, add = TRUE)
+plot(sensorBox, add = TRUE)
+if (file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep = "/"), ".shp", sep = ""))){
+  plot(geoFeatures, add = TRUE)
+}
+plot(surveyPts, add = TRUE)
+
+# Do a quick QAQC check and make sure they are no duplicate names in the surveyPts file
+# if there are please fix before completing this code.
+# Make sure the names are consistent
+dupPoints <- data.frame()
+dupHabitatIds <- data.frame()
+
+lookup <- c(name = "NAME", latitude = "LATITUDE", longitude = "LONGITUDE", easting = "EASTING",
+            northing ="NORTHING", elevation = "ELEVATION", mapCode = "MAPCODE")
+
+surveyPts <- surveyPts %>%
+  rename(any_of(lookup))
+
+dupsSurveyPts <- as.data.frame(surveyPts) %>%
+  group_by(name) %>%
+  filter(n() > 1) %>%
+  ungroup() %>%
+  dplyr::mutate(surveyID = surveyID)
+
+if (nrow(dupsSurveyPts) > 0){
+ 
+  dupPoints<- bind_rows(dupPoints, dupsSurveyPts)
+  print("Stop, duplicate values to fix")
+}
+
+# Update habitatIDs
+rawHabitat <- rawHabitat %>%
+  dplyr::mutate(habitatID = tolower(habitatID)) %>% #make all habitatIds lower case 
+  dplyr::mutate(habitatID = gsub("\\s", "", habitatID)) %>% #remove any extra white spaces between the word and number
+  dplyr::mutate(habitatID = gsub("drysection", "drySection", habitatID)) #update drySection
+
+if(surveyID %in% c('SYCA_2018', 'SYCA_2023')){
+  rawHabitat <- rawHabitat %>%
+    dplyr::mutate(habitatID = 'drySection1') 
+}
+
+# Check for duplicates
+rawHabitatCheck <- data.frame(rawHabitat) %>%
+  group_by(habitatID) %>%
+  filter(n() > 1) %>%
+  ungroup() %>%
+  dplyr::mutate(surveyID = surveyID)
+
+if (nrow(rawHabitatCheck) > 0){
+  dupHabitatIds<- rbind(dupHabitatIds, rawHabitatCheck)
+  print("Stop, duplicate habitatID values to fix")
+}
+```
+
+## START CALCULATING METRICS
+
+### Remove features from habitat
+```{r remove raw data from survey points and the MCB and ISL from the habitat area}
+# Create another copy to work with later
+surveyPtsRaw <- surveyPts
+
+# Erases the mcb,island, beaver dams, etc area from the habitat id polygon if they exist 
+if (file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep = "/"), ".shp", sep=""))){
+  
+  # Create the layer for kmz that removes all geofeatures
+  habitat_allGeoFeatRemoved <- terra::erase(rawHabitat, geoFeatures)
+  
+  if (nrow(geoFeatures %>% filter(grepl("^ISL|^MCB", featureID))) > 0) {
+  # Subset geoFeatures so only features that don't have flowing water are removed from the habitat area
+  geoFeat_toRemove <- geoFeatures[grepl("^ISL|^MCB", geoFeatures$featureID), ]
+  
+  # Remove the areas from the habitat Id layer that include geomorpth features that block water
+  habitat2 <- terra::erase(rawHabitat, geoFeat_toRemove)
+  
+  # Check to make sure the features are removed - there should now be holes in the habitat layer
+  plot(habitat2)
+  
+   # Calculate area
+  habitat2$areaM2 <- terra::expanse(habitat2, unit = "m")
+  } else {
+  geoFeat_flowingWater <- geoFeatures[grepl("^BEA|^LWD", geoFeatures$featureID), ]
+  
+  # Create the habitat layer that will be used for the shapefile
+  habitat_flowingWater_geoFeat <- terra::erase(rawHabitat, geoFeat_flowingWater)
+  
+  # Rename habitat to habitat 2 for the rest of the code
+  habitat2 <- rawHabitat
+  
+  # Check to make sure the features are  not removed- there should not be holes in the habitat layer
+  plot(habitat2)
+  
+  # Calculate area
+  habitat2$areaM2 <- terra::expanse(habitat2, unit = "m")
+  }
+  
+} else { #if no geomorphology features exist
+  print("no geomorphology features exist, habitat2 remains unchanged from rawHabitat")
+  # Rename habitat to habitat 2 for the rest of the code
+  habitat2 <- rawHabitat
+  
+  # Calculate area
+  habitat2$areaM2 <- terra::expanse(habitat2, unit = "m")
+}
+
+# Check to make sure area was added
+values(habitat2, dataframe = T)
+```
+
+### Braided channels
+```{r braided channels}
+## This chunk compares the length of each channel where braided channels occur and keeps the longest channel to produce the long profile line
+
+# Add length (in meters) to each line segment in the thalweg line shapefile
+thalweg$lengthM <- terra::perim(thalweg)
+
+# Compare the lengths for the braided channels and choose one to keep
+# Filter out all the lines that have a digit in the feature field (mcb1, etc)
+geoFeaturesOnly <- thalweg[grepl("\\d", thalweg$featureID),] 
+
+# Check the data- only the channels should plot
+if(nrow(geoFeaturesOnly) > 0) {
+  
+  values(geoFeaturesOnly, dataframe = T)
+  plot(geoFeaturesOnly)
+  
+  # Keep only the longest channel 
+  geoFeaturesRevised <- geoFeaturesOnly %>% 
+    dplyr::group_by(featureID) %>%
+    dplyr::filter(lengthM == max(lengthM))
+  
+  # Check the data, should be just one line for each mcb
+  values(geoFeaturesRevised, dataframe = T)
+  plot(geoFeaturesRevised)
+  
+  # Remove all mcb lines from the original dataframe and add back in the ones we want to keep
+  thalweg2 <- thalweg[!grepl("\\d", thalweg$featureID),]
+  thalwegUpdatedGeoFeatures <- rbind(thalweg2, geoFeaturesRevised)
+  
+  # Update any site specific changes
+  # Pringle had a thalweg terminate into a bank, remove that section
+  if (surveyID == "PRIN_2017" | surveyID == "POSE_2017" | surveyID == "BIGC=2019"){
+    thalwegUpdatedGeoFeatures <- thalwegUpdatedGeoFeatures[!grepl("terminate", thalwegUpdatedGeoFeatures$comment),]
+  }
+  
+  if (surveyID == "SYCA_2018" | surveyID == "LECO_2019"){
+    thalwegUpdatedGeoFeatures <- thalwegUpdatedGeoFeatures[!grepl("branch", thalwegUpdatedGeoFeatures$comment),]
+  }
+  
+  # Now the thalweg line should contain no braided channels (i.e., one line across the reach)
+  values(thalwegUpdatedGeoFeatures, dataframe = T)
+  plot(thalwegUpdatedGeoFeatures)
+  
+} else {
+  thalwegUpdatedGeoFeatures <- thalweg
+  plot(thalwegUpdatedGeoFeatures)
+}
+
+# Change to sf object
+thalwegUpdatedGeoFeaturesSF <- as_sf(thalwegUpdatedGeoFeatures)
+
+# Write shapefile, this call overwrites
+#write_sf(thalwegUpdatedGeoFeaturesSF,
+         #paste0(filePath, "/", domain, "_", site, '_geomorph_thalwegLongProfile_', surveyDate, ".shp"), layer_options = "ENCODING=UTF-8")
+```
+
+```{r intersect thalweg, SIS2 by habitat type}
+# Intersect the thalweg line by the habitat polygon.  
+# for each habitat id (riffle 1, riffle 2, etc) this code breaks up the thalweg line to match those polygons
+# if you get a warning messages that includes coordinates that often means the habitat polygon does not intersect the #thalweg, edit the habitat shapefile and start over 
+
+habitatOverlay <- terra::intersect(thalwegUpdatedGeoFeatures, rawHabitat)
+
+# Add length (in meters) 
+habitatOverlay$LengthHab <- perim(habitatOverlay)
+
+# Create a line shapefile between S1 & S2 
+S1S2Overlay <- terra::intersect(thalwegUpdatedGeoFeatures, sensorBox)
+plot(S1S2Overlay)
+S1S2Overlay$Length <- perim(S1S2Overlay)
+
+# Determine what habitat types S1 and S2 are in 
+# Pull out S1 and S2 from the point shapefile - watch out to make sure you only pull 2 points
+S1S2 <- surveyPts[grepl("Sensor", surveyPts$mapCode), ]
+
+if (nrow(S1S2) < 2) {
+  if (site == "LECO") { #LECO does not survey S2 transect so DSC is used instead
+    S1S2 <- surveyPts[grepl("DSC_THL|S1_THL", surveyPts$name), ]
+  } else {
+    S1S2 <- surveyPts[grepl("S1_THL|S2_THL", surveyPts$name), ]
+  }
+  
+  # remove the _THL from the name
+  S1S2$name <- gsub("_THL", "", S1S2$name)
+}
+
+# BLUE only has S2
+if (site != "BLUE"){
+  ifelse(nrow(S1S2) != 2, "STOP, need to fix line above to only pull out S1 and S2", "all good, keep on grooving")
+} 
+
+if(site == "BLUE"){
+  ifelse(nrow(S1S2) != 1, "STOP, need to fix line above to only pull S2", "all good, keep on grooving")
+} 
+
+# Check plot
+plot(S1S2)
+plot(rawHabitat, add = T) #should be two points
+
+# Overlay the habitat polygon
+S1S2Habitat <- terra::intersect(S1S2, rawHabitat)
+```
+
+### Thalweg long profile
+```{r create the thalweg long profile}
+# This chunk pulls out the thalweg points that fall along the updated thalweg line
+
+# First create a small buffer to transform the thalwg line into a polygon
+thalBuff<- buffer(thalwegUpdatedGeoFeatures, width = 2)
+
+# Pull out all thalweg and max pool depth (MPD) points from the surveyPts
+thalPoints <- surveyPts[grepl("THL|MPD", surveyPts$name), ]
+
+# Overlay the survey points with the modified thalweg
+longProfile <- terra::intersect(thalPoints, thalBuff)
+
+# Check data
+plot(longProfile)
+values(longProfile, data.frame = T)
+
+# Convert to data.frame to get ready for export
+longProfileDF <- values(longProfile, data.frame = T)
+
+# Clean up the dataframe columns by removing unnecessary columns and duplicates (this happens when the survey pt is on junction of two thalweg lines)
+longProfileDF <- longProfileDF[, -c(9:14)] %>%
+  distinct(name, .keep_all = T)
+
+# Change transect names back to thalweg
+longProfileDF$mapCode <- ifelse(grepl("Transect", longProfileDF$mapCode), "THL", as.character(longProfileDF$mapCode)) 
+#longProfileDF$mapCode <- ifelse(grepl("THL", longProfileDF$name),"THL", ifelse(grepl("MPD", longProfileDF$name),"Max Pool Depth", NA)) #use if above errors
+
+# If needed, make sure elevation column is elevationM
+colnames(longProfileDF)
+```
+### Main calculations - length, area, slope, sinuosity, features
+```{r calculations}
+# First part calculates the entire length of thalweg by habitat types
+thalwegHabitat<- data.frame(habitatOverlay)
+thalwegHabitat %>% mutate_if(is.factor, as.character) -> thalwegHabitat
+
+# Clean up the dataframe by dropping fields we no longer need
+# only want habitatID and LengthHab left
+thalwegHabitat <- thalwegHabitat[,c("habitatID","LengthHab")]
+
+# Add all the lengths up for each habitat ID.  
+# This line says for the thalweg habitat dataframe, groupy by Habitat ID (riffle1, riffle2, etc)
+# and then sum the length of all the lines segements that happen in that area.
+habitatID <- plyr::ddply(thalwegHabitat , .(habitatID), summarise, lengthM= sum(LengthHab))
+
+# Add back the area information (use habitat2 which has removed area from geomorph features that block water flow: MCB & ISL)
+habitatID$areaM2 <- 0
+habitat2DF <- data.frame(habitat2)
+
+if (entireSurveyDry == "N"){ #if an entire survey was dry then no need to do area calculations since area= 0
+  for (a in 1:nrow(habitatID)){
+    for (z in 1:nrow(habitat2DF)){
+      if(habitatID$habitatID [a] == habitat2DF$habitatID [z]){
+        habitatID$areaM2[a] <- habitat2DF$areaM2[z]
+      }
+    }
+  }
+}
+
+# Remove area from drySections (for surveys with only some dry areas)
+habitatID$areaM2 <- ifelse(grepl("dry", habitatID$habitatID), 0, habitatID$areaM2)
+
+# Compute percent length by habitat ID and then by habitat type
+totalLength <- sum(habitatID$lengthM)
+totalArea <- sum(habitatID$areaM2)
+habitatID$percentLength <-habitatID$lengthM/totalLength*100
+
+# Create habitat type summary table
+habitatID$habitat <- gsub("\\d",'\\1',habitatID$habitatID)
+habitatLength<- ddply(habitatID, .(habitat), summarise, lengthM = sum(lengthM))
+habitatArea<- ddply(habitatID, .(habitat), summarise, areaM2 = sum(areaM2))
+
+# Combine information into one dataframe
+habitat <- merge(habitatLength,habitatArea, by = 'habitat')
+
+# Calculate percents for each habitat table
+habitat$percentLength <-habitat$lengthM/totalLength*100
+
+# Clean up the processed points
+# transform to a dataframe
+surveyPtsDF <- data.frame(surveyPts)
+
+# Clean up the processed survey points
+#surveyPtsDF <- surveyPtsDF[,-c(8)]
+
+# Calculate slope of the thalweg
+# downstream elevation = THL
+thalwegLength <- sum(habitatID$dryLengthM, na.rm = TRUE)
+if (surveyID == "SYCA_2018"){
+  thalwegLength = 1181.818
+}
+dsElevation <- surveyPtsDF$elevation[which(surveyPtsDF$name == downStreamTHL)]
+usElevation <- surveyPtsDF$elevation[which(surveyPtsDF$name == upStreamTHL)]
+
+slopeM <-round(abs(usElevation-dsElevation)/totalLength, 4)
+
+ifelse((slopeM == 0 | slopeM == ""),"STOP! double check slope calculation", "All set, slope value included")
+
+# Calculate the length between S1 and S2, slope, and the associated habitat types
+if (site != "BLUE"){
+  S1S2thalweg <- data.frame(S1S2Overlay)
+  S1S2DF <- data.frame(S1S2)
+  
+  if (site == "LECO") {
+    # LECO uses DSC and S1
+    S1S2Metrics <- data.frame(lengthM=(sum(S1S2thalweg$Length)), 
+                            elevationDiffM = S1S2DF$elevation[which(grepl("^S1", S1S2$name))] - S1S2DF$elevation[which(grepl("^DSC", S1S2$name))])
+  } else {
+    # All other sites, except BLUE, use S1 and S2
+    S1S2Metrics <- data.frame(lengthM=(sum(S1S2thalweg$Length)), 
+                            elevationDiffM = S1S2DF$elevation[which(grepl("^S1", S1S2$name))] - S1S2DF$elevation[which(grepl("^S2", S1S2$name))])
+  }
+  
+# Calculate the slope
+S1S2Metrics$slopeM <- S1S2Metrics$elevationDiffM / S1S2Metrics$lengthM
+
+# Habitat data frame
+S1S2HabitatDF <- data.frame(S1S2Habitat)
+S1S2habitat <- data.frame(
+  sensor = S1S2HabitatDF$name, 
+  easting = S1S2HabitatDF$easting, 
+  northing = S1S2HabitatDF$northing, 
+  latitude = S1S2HabitatDF$latitude, 
+  longitude = S1S2HabitatDF$longitude, 
+  elevationM = S1S2HabitatDF$elevation, 
+  habitatID = S1S2HabitatDF$habitatID)
+
+# you will get an error if S1/S2 have different names
+}
+
+if(site == "BLUE"){ #only S2 so no calculations
+  S1S2Metrics = data.frame(lengthM = NA,
+                           slopeM = NA,
+                           elevationDiffM = NA)
+  
+  S1S2HabitatDF <- data.frame(S1S2Habitat)
+  # add NA row for S1
+  S1S2HabitatDF <- S1S2HabitatDF %>%
+    dplyr::add_row(name = "S1", habitatID = NA)
+  
+  S1S2habitat <- data.frame(sensor = S1S2HabitatDF$name, easting = S1S2HabitatDF$easting, northing = S1S2HabitatDF$northing,latitude = S1S2HabitatDF$latitude, longitude = S1S2HabitatDF$longitude, elevationM = S1S2HabitatDF$elevation,habitatID = S1S2HabitatDF$habitatID)
+}
+
+
+
+# Geomorph feature counts
+if (file.exists(paste(paste(filePath,geoFeaturesShapefileName, sep = "/"), ".shp",sep = ""))){
+  geoFeaturesDf <- data.frame(geoFeatures)
+  # pull out first 3 letters 
+  geoFeaturesDFSUM<- data.frame(feature = as.character(substr(geoFeaturesDf$featureID, 1, 3)))
+}
+
+# Pull out any waterfalls, culverts, or tributaries from the survey points
+surveyFeats <- data.frame(surveyPts)
+surveyFeats2 <- surveyFeats[grepl("WFT|CUL|TRB|TRI|MAR|WEIR_L", surveyFeats$name),] 
+surveyFeats2$name <- as.character(surveyFeats2$name)
+surveyFeats2$mapCode <- as.character(surveyFeats2$mapCode)
+surveyFeats2$name[which(surveyFeats2$mapCode=="Waterfall")]<- "WF" #waterfalls have 2 points, top and bottom.
+surveyFeats2$name[which(surveyFeats2$mapCode=="Weir")]<- "WEIR" #weir has 2 points, left and right.
+
+if (nrow(surveyFeats2) > 0){
+  # pull out first 3 letters 
+  surveyFeatsSUM<- data.frame(feature = as.character(substr(surveyFeats2$name, 1, 3)))
+  surveyFeatsSUM$feature <- as.character(surveyFeatsSUM$feature)
+  surveyFeatsSUM$feature[which(surveyFeatsSUM$feature=="WEI")]<- "WEIR" #add the "r" back in
+}
+
+if (file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep="/"),".shp",sep="")) & nrow(surveyFeats2) > 0){
+  featSum <- rbind(geoFeaturesDFSUM, surveyFeatsSUM)
+  featSummary <- plyr::count(featSum, "feature")
+} else if ((file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep="/"),".shp",sep="")) & (nrow(surveyFeats2) == 0))){
+  featSummary <- plyr::count(geoFeaturesDFSUM, "feature")
+}else if (nrow(surveyFeats2) > 0 & !file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep="/"),".shp",sep=""))){
+  featSummary <- plyr::count(surveyFeatsSUM, "feature")
+} else {
+  print("No geomorph features or feature points to count")
+}
+
+# Add column with full names of features
+featSummary <- featSummary %>%
+  mutate(feature_LOV = case_when(
+    feature == 'TRB' ~ 'tributary',
+    feature == 'LWD' ~ 'large woody debris',
+    feature == 'ISL' ~ 'island',
+    feature == 'CUL' ~ 'culvert',
+    feature == 'MCB' ~ 'mid-channel bar',
+    feature == 'MAR' ~ 'marsh',
+    feature == 'TRI' ~ 'tributary',
+    feature == 'WF' ~ 'water fall',
+    feature == 'WFT' ~ 'water fall',
+    feature == 'WFB' ~ 'water fall',
+    feature == 'BEA' ~ 'beaver dam',
+    feature == 'WEIR' ~ 'weir',
+    TRUE ~ as.character(feature)  #default if no match
+  ))
+
+## Calculate channel sinuosity - divide the length of the stream channel by the straight line distance between the end points of the selected channel reach
+# Pull easting/northing for upstream and downstream THL points and create data frame
+sinuosity <- data.frame(
+  downstream_easting = surveyPtsDF$easting[which(surveyPtsDF$name == downStreamTHL)],
+  downstream_northing = surveyPtsDF$northing[which(surveyPtsDF$name == downStreamTHL)],
+  upstream_easting = surveyPtsDF$easting[which(surveyPtsDF$name == upStreamTHL)],
+  upstream_northing = surveyPtsDF$northing[which(surveyPtsDF$name == upStreamTHL)]
+)
+
+# Calculate the straight-line distance using the Pythagorean theorem
+sinuosity$straightDistance <- sqrt(
+  (sinuosity$upstream_easting - sinuosity$downstream_easting)^2 +
+    (sinuosity$upstream_northing - sinuosity$downstream_northing)^2
+)
+
+# Divide total length by straight line distance
+sinuosity$channelSinuosity <- round(max(habitat$lengthM)/sinuosity$straightDistance, 2)
+
+
+## Get total thalweg length
+total_length <- sum(habitat$lengthM)
+```
+
+### Dry sections
+``````{r dry sections}
+# Calculates the percent of the thalweg that is dry
+dryDF <- data.frame(habitatOverlay)
+
+if ("Y" %in% dryDF$dryComment){
+  
+  #skip if the the entire survey was dry
+  if (entireSurveyDry == "N"){
+    
+    #cleanup DF
+    dryDFHabitat <- dryDF[,c("dryComment", "LengthHab", "habitatID", "dryComment")]
+    #add all the lengths up for each habitat ID.  
+    #This line says for the thalweg habitat dataframe, group by Habitat ID (riffle1, riffle 2, etc)and dry comment
+    #and then sum the length of all the lines segments that happen in that area.
+    dryDFHabitat <- ddply(dryDFHabitat , .(habitatID, dryComment), summarise, dryLengthM= sum(LengthHab))
+    #calculate % dry total
+    dryDFHabitat$dryLengthM <- round(dryDFHabitat$dryLengthM, 2)
+    #drop any that round to 0
+    dryDFHabitat <- dryDFHabitat[!(dryDFHabitat$dryComment == "Y" & dryDFHabitat$dryLengthM == 0.00),]
+    thalwegLength <- sum(dryDFHabitat$dryLengthM, na.rm = TRUE)
+    thalwegLengthDry <- sum(dryDFHabitat$dryLengthM[which(dryDFHabitat$dryComment== "Y")])
+    
+    #add in the percentdry per habitat ID
+    dryLength <- filter(dryDFHabitat, dryComment == "Y")
+    habitatID<- left_join(habitatID, dryLength, by ="habitatID")
+    
+    # calculate percent dry
+    #first change NAs to 0 
+    habitatID$dryLengthM <- ifelse(is.na(habitatID$dryLengthM), 0, habitatID$dryLengthM)
+    
+    
+    habitatID$percentDry <- round(habitatID$dryLengthM/habitatID$lengthM*100,2)
+    
+    #change any values over 100 back to 100 (happens due to rounding error)
+    habitatID$percentDry <-ifelse(habitatID$percentDry > 100, 100.00, habitatID$percentDry)
+    
+    #change any values 99.99 back to 100 (happens due to rounding error)
+    habitatID$percentDry <-ifelse(habitatID$percentDry == 99.99, 100.00, habitatID$percentDry)
+    
+    #calculate the totals
+    dryTotalPercent <-round(thalwegLengthDry/thalwegLength*100, 2)
+    dryTotalLength <-thalwegLengthDry
+    
+    
+    #clean up and reorder the dataframe
+    habitatID<- data.frame(habitatID = habitatID$habitatID,
+                           lengthM = habitatID$lengthM,
+                           areaM2 = habitatID$areaM2,
+                           percentLength = habitatID$percentLength,
+                           dryLengthM = habitatID$dryLengthM,
+                           percentDry = habitatID$percentDry, 
+                           habitat = habitatID$habitat, 
+                           stringsAsFactors = FALSE)
+    #change NA to blank
+    habitatID[is.na(habitatID)] <- ""
+    
+    
+  } else{
+    #if the entire survey was dry add percentDry = 100
+    dryTotalPercent <- 100
+    
+    #create a habitatID and S1S2habitat habitatID
+    habitatID <- data.frame(habitatID = "drySection1", lengthM = total_length, areaM2 = 0, percentLength = 100, habitat = "drySection1", percentDry = 100)
+    S1S2habitat$habitatID <- "drySection1"
+  } 
+  
+} else {
+  # if no dry comments populate with zero
+    dryTotalPercent <- 0
+    habitatID$percentDry <- 0
+  
+}
+
+# QAQC check to make sure no wet edge shots in dry areas
+# check the points that have overlap in the map, they can touch but they should not be inside the dry sections
+# needs work
+
+# dryHabitatSp <- rawHabitat[grepl("creek was dry in this section during the survey",rawHabitat$comment),]
+# edgeShots <- surveyPts[grepl("REW|LEW",surveyPts$mapCode),]
+# 
+# if(length(edgeShots) == 0){
+# print("survey all set, no edge shots in the entire survey")
+# } else{
+#   overlapInDry <-intersect(edgeShots, dryHabitatSp)
+#   plot(dryHabitatSp)
+#   plot(test, add = T)
+#   test <- lapply(overlapInDry, as.points) |> vect() #pull out any edge shots that are in the dry habitat section
+#   ifelse(length(overlapInDry) > 0, "check LEW/REW shots in dry sections", "dry sections all set")
+# } 
+# 
+#}
+```
+
+# Subterranean sections
+```{r subterranean sections}
+# Determine the percent habitat unit for thalwegs where a portion is subterranean 
+# a file is created during ArcGIS processing that includes the habitatID and length of subterranean section
+
+if ("Y" %in% siteDirectory$subterraneanFile.[which(siteDirectory$surveyID == surveyID)]){
+  # Read in the file
+  subFile <-read.csv(paste(filePath,'/subterraneanFile.csv', sep = ""), head = T, sep = ",", stringsAsFactors = F)
+  # Add the length of the subterranean features by habitatID
+  subTer <-left_join(habitatID, subFile, by = "habitatID")
+  # Drop the habitat column since we want to it be at the end of the dataframe at the end
+  drops <- c("habitat")
+  subTer <- subTer[ ,!(names(subTer) %in% drops)]
+  # Calculate the %
+  subTer$percentSubterranean <- round(subTer$subterraneanLengthM/subTer$lengthM*100, 2)
+  # If percent is over 100%, rewrite as 100.00. This happens if the subterranean portion of the thalweg runs outside of the surveyed habitat polygon
+  subTer$percentSubterranean <- ifelse(subTer$percentSubterranean > 100.00, 100.00, subTer$percentSubterranean)
+  # Add the totaldry length and the total precent dry
+  totalLength <-round(sum(subTer$subterraneanLengthM, na.rm=TRUE), 2)
+  totalPercent <- round(totalLength/(sum(subTer$lengthM)*100), 2)
+  if (totalPercent == 0.00){
+    totalPercent <- "< 1"
+  }
+  # Add totals to the bottom row
+  subTer$subterraneanLengthM[is.na(subTer$habitatID)] <- totalLength
+  subTer$percentSubterranean[is.na(subTer$habitatID)] <- totalPercent
+  #clean up dataframe
+  subTer$habitat <-gsub("\\d", "", subTer$habitatID)
+  habitatID <- subTer
+  
+  # Change NA to blank
+   habitatID[is.na(habitatID)] <- ""
+} else if ("N" %in% siteDirectory$subterraneanFile[which(siteDirectory$surveyID == surveyID)]) {
+  # If "N" is found, create the 'percentSubterranean' column and populate all rows with 0
+  habitatID$percentSubterranean <- 0
+} else {
+  print("subterraneanFile column is blank in siteDirectory. Go back and populate with correct value.")
+}
+
+# Add total percent subterranean
+subTotalPercent <- sum(as.numeric(habitatID$percentSubterranean), na.rm = TRUE)
+```
+
+## CREATE AND WRITE OUT INGEST TABLES
+
+### Create tables
+```{r ingest tables}
+
+# check elevation is named correctly - if needed
+if ("elevation" %in% colnames(surveyPtsDF)) {
+  surveyPtsDF <- dplyr::rename(surveyPtsDF, elevationM = elevation)
+}
+if ("elevation" %in% colnames(longProfileDF)) {
+  longProfileDF <- dplyr::rename(longProfileDF, elevationM = elevation)
+  }
+
+# Round all the output dataframes
+round_df <- function(x, digits) {
+  # round all numeric variables
+  # x: data frame
+  # digits: number of digits to round
+  numeric_columns <- sapply(x, mode) == 'numeric'
+  x[numeric_columns] <-  round(x[numeric_columns], digits)
+  x
+}
+
+# Round habitatID, habitat, S12metrics
+habitatID <- round_df(habitatID, 2)
+habitat<- round_df(habitat, 2)
+S1S2Metrics<- round_df(S1S2Metrics, 4)
+
+# Create geo_surveySummary_in ingest table
+geo_surveySummary <- data.frame(uid = "",
+                                locationID = site,
+                                startDate = fulcrumStartDate,
+                                endDate = fulcrumEndDate, 
+                                samplingImpractical = "OK",
+                                eventID = paste0(site,".", substr(surveyDate,0,6)), # SITE.YYYYMM
+                                surveyBoutTypeID = "geomorphology",
+                                meanBankfullWidth = ifelse(exists("meanBankfullWidth"), meanBankfullWidth, ""), #populated from geoMorphTransectMetrics.rmd after table creation
+                                S1habitatID = S1S2HabitatDF$habitatID[which(grepl("S1", S1S2HabitatDF$name))],
+                                S2habitatID = S1S2HabitatDF$habitatID[which(grepl(if (site == "LECO") "DSC" else "S2", S1S2HabitatDF$name))],
+                                sensorSetLength = round(S1S2Metrics$lengthM, 2),
+                                sensorSetSlope = round(S1S2Metrics$slopeM * 100, 2),
+                                sensorSetElevDiff = round(S1S2Metrics$elevationDiffM, 2),
+                                thalwegLength = round(total_length, 2), #max(habitat$lengthM),
+                                thalwegSlope = round(slopeM * 100, 2), #value created from tail(habitat$slopeM, 1)
+                                channelSinuosityIndex = round(sinuosity$channelSinuosity, 2),
+                                percentDry= if (exists("dryTotalPercent")) dryTotalPercent else 0,
+                                percentComplete= "100", # modify if not 100% complete
+                                percentSubterranean = subTotalPercent,
+                                totalTransformationError = round(transformationError, 4),
+                                samplingProtocolVersion =  samplingProtocolVersion,
+                                sopVersion = "NEON.DOC.005402vA",
+                                dataFileName = paste0("NEON_", domain, "_", site, "_GEOMORPH_", surveyDate, "_L4_VA.zip"),
+                                dataFilePath = "",
+                                rawDataFileName = ifelse(trimbleFileName != "", 
+                                                         paste0("NEON_", domain, "_", site, "_GEOMORPH_", surveyDate, "_L0_VA.zip"), ""),
+                                rawDataFilePath = "",
+                                remarks = "",
+                                processedSurveyVersion = "VA", 
+                                dataQF = "",
+                                surveyComplete = "Survey Review Complete") # Unpublished field but required for ingest
+
+# Create geo_featureCount_in ingest table                                
+geo_geomorphicFeatureCount <- data.frame(uid = "",
+                               locationID = site,
+                               startDate = fulcrumStartDate,
+                               endDate = fulcrumEndDate,
+                               eventID = paste0(site,".", substr(surveyDate,0,6)), 
+                               geomorphicFeatureType = featSummary$feature_LOV,
+                               geomorphicFeatureCount = featSummary$freq,
+                               processedSurveyVersion = "VA",
+                               remarks = "",
+                               dataQF = "")
+
+
+# Create geo_processedSurveyData ingest table
+geo_processedSurveyData <- data.frame(uid = "",
+                                      locationID = site,
+                                      startDate = fulcrumStartDate,
+                                      endDate = fulcrumEndDate,
+                                      eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                      surveyPointID = surveyPtsDF$name,
+                                      decimalLatitude = round(surveyPtsDF$latitude, 6),
+                                      decimalLongitude = round(surveyPtsDF$longitude, 6),
+                                      easting = round(surveyPtsDF$easting, 3),
+                                      northing = round(surveyPtsDF$northing, 3),
+                                      utmZone = utmZone,
+                                      geodeticDatum = geodeticDatum,
+                                      elevation = round(surveyPtsDF$elevationM, 2),
+                                      mapCode = surveyPtsDF$mapCode,
+                                      processedSurveyVersion = "VA",
+                                      remarks = "",
+                                      dataQF = "")   
+
+
+# Create geo_rawSurveyData ingest table
+geo_rawSurveyData <- data.frame(uid = "",
+                                locationID = site,
+                                startDate = fulcrumStartDate,
+                                endDate = fulcrumEndDate,
+                                eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                surveyPointID = rawSurveyData$NAME,
+                                relativeEasting = rawSurveyData$E, 
+                                relativeNorthing = rawSurveyData$N,
+                                relativeHeight = rawSurveyData$H,
+                                relativeHorizontalAngle = rawSurveyData$HA,
+                                relativeVerticalAngle = rawSurveyData$VA,
+                                relativeHorizontalDistance = rawSurveyData$HD,
+                                heightOfRod = rawSurveyData$hr,
+                                atmosphericCorrection = rawSurveyData$ppm,
+                                processedSurveyVersion = "VA",
+                                remarks = "",
+                                dataQF = "")                              
+
+
+
+# Create geo_thalwegByHabitatID_in ingest table 
+geo_thalwegByHabitatID <- data.frame(uid = "",
+                                     locationID = site,
+                                     startDate = fulcrumStartDate,
+                                     endDate = fulcrumEndDate,
+                                     eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                     habitatID = habitatID$habitatID, 
+                                     habitatLength = habitatID$lengthM,
+                                     habitatArea = habitatID$areaM2,
+                                     percentTotalThalwegLength = habitatID$percentLength,
+                                     percentSubterranean = habitatID$percentSubterranean,  # Use value or default to 0 
+                                     percentDry = habitatID$percentDry,  #added line in dry section to add 'percentDry' column if it didn't exist and populate with 0
+                                     processedSurveyVersion = "VA",
+                                     remarks = "",
+                                     dataQF = "")
+
+# Create geo_thalwegByHabitatType_in ingest table 
+geo_thalwegByHabitatType <- data.frame(uid = "",
+                                       locationID = site,
+                                       startDate = fulcrumStartDate,
+                                       endDate = fulcrumEndDate,
+                                       eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                       habitatType = habitat$habitat,
+                                       habitatLength = habitat$lengthM,
+                                       habitatArea = habitat$areaM2,
+                                       percentTotalThalwegLength = habitat$percentLength,
+                                       processedSurveyVersion = "VA",
+                                       remarks = "",
+                                       dataQF = "")
+
+# Create geo_thalwegLongProfile_in ingest table
+geo_thalwegLongProfile <- data.frame(uid = "",
+                                     locationID = site,
+                                     startDate = fulcrumStartDate,
+                                     endDate = fulcrumEndDate,
+                                     eventID = paste0(site,".", substr(surveyDate,0,6)), 
+                                     surveyPointID = longProfileDF$name,
+                                     decimalLatitude = round(longProfileDF$latitude, 6),
+                                     decimalLongitude = round(longProfileDF$longitude, 6),
+                                     elevation = round(longProfileDF$elevationM, 2),
+                                     mapCode = longProfileDF$mapCode,
+                                     easting = round(longProfileDF$easting, 3),
+                                     northing = round(longProfileDF$northing, 3),
+                                     utmZone = utmZone,
+                                     geodeticDatum = geodeticDatum, # from the inputDirectory
+                                     processedSurveyVersion = "VA",
+                                     remarks = "",
+                                     dataQF = "")
+
+# Create geo_transectBankfullWidths_in ingest table
+geo_transectBankfullWidths <- data.frame(uid = "",
+                                         locationID = site,
+                                         startDate = fulcrumStartDate,
+                                         endDate = fulcrumEndDate,
+                                         eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                         transectID = ifelse(exists("widthTransectID"), widthTransectID, ""), #populated from geoMorphTransectMetrics.rmd after table creation
+                                         bankfulWidth = ifelse(exists("bankfullWidth"), bankfullWidth, ""), #populated from geoMorphTransectMetrics.rmd after table creation
+                                         processedSurveyVersion = "VA", 
+                                         remarks = "",
+                                         dataQF = "")
+
+# Create geo_trimbleData_in ingest table, if data exist
+# Check if Trimble data was used before creating data frame
+if (exists("trimbleData")) {
+  geo_trimbleData <- data.frame(uid = "",
+                                locationID = site,
+                                startDate = fulcrumStartDate,
+                                endDate = fulcrumEndDate,
+                                eventID = paste0(site,".", substr(surveyDate,0,6)),
+                                surveyPointID = if ("pointID" %in% names(trimbleData)) trimbleData$pointID else if ("Comment" %in% names(trimbleData)) trimbleData$Comment else "", #not consistently named
+                                maxPDOP = trimbleData$Max_PDOP, #or maxPDOP
+                                maxHDOP = trimbleData$Max_HDOP, #or HDOP
+                                gnssCorrectionType = if ("Corr_Type" %in% names(trimbleData)) trimbleData$Corr_Type else "", #not in all files
+                                gnssUsed = trimbleData$Rcvr_Type, 
+                                gnssDatafile = trimbleData$Datafile,
+                                elevation = trimbleData$GNSS_Heigh, #not in all files and some files use "GNSS_Height" (with "t")
+                                elevationUncertainty = trimbleData$Vert_Prec, #not in all files
+                                coordinateUncertainty = trimbleData$Horz_Prec, 
+                                gnssStdev = trimbleData$Std_Dev,
+                                decimalLatitude = trimbleData$Latitude,
+                                decimalLongitude = trimbleData$Longitude,
+                                easting = if ("easting" %in% names(trimbleData)) trimbleData$easting else "", #not in all files
+                                northing = if ("northing" %in% names(trimbleData)) trimbleData$northing else "", #not in all files
+                                utmZone = utmZone,
+                                geodeticDatum = geodeticDatum,
+                                processedSurveyVersion = "VA",
+                                remarks = "",
+                                dataQF = "")
+} else {
+  message("No Trimble data available; skipping geo_trimbleData creation")
+}
+```
+
+### Write tables
+```{r outputs}
+# Write data frames to output folder 
+df_names <- c("geo_surveySummary", "geo_geomorphicFeatureCount", "geo_processedSurveyData", "geo_rawSurveyData", "geo_thalwegByHabitatID", "geo_thalwegByHabitatType", "geo_thalwegLongProfile", "geo_transectBankfullWidths")
+
+# Include geo_trimbleData if it exists
+if (exists("geo_trimbleData")) {
+  df_names <- c(df_names, "geo_trimbleData")
+}
+
+# Get data frames
+data_frames <- mget(df_names, ifnotfound = list(NULL))
+
+# Run loop to replace NAs and write CSVs 
+for (df_name in df_names) {
+  df <- data_frames[[df_name]]
+  
+  # Skip if dataframe is null
+  if (is.null(df)) {
+    cat(paste("Skipping", df_name, "because it does not exist.\n"))
+    next
+  }
+  
+  # Replace NA values with empty string
+  df[is.na(df)] <- ""
+  
+  # Naming convention and Path for outputs
+  outputsFinal <- paste0(outPathTables, '/', domain, '_', site, '_', df_name, '_', surveyDate, '.csv')
+  
+  # # Optional - Check if file exists if needing to re-run script
+  # # Use if want to manually approve overwrite
+  # if (file.exists(outputsFolder)) {
+  #   #ask to confirm overwrite
+  #   user_input <- readline(paste("File", outputsFolder, "already exists. Overwrite? (y/n): "))
+  # 
+  #   # if not approve, skip this file
+  #   if (tolower(user_input) != "y") {
+  #     cat(paste("Skipping", outputsFolder, "\n"))
+  #     next
+  #   }
+  # }
+  # # want to overwrite for now
+  # if (file.exists(outputsFolder)) {
+  #   cat(paste("File", outputsFolder, "already exists. Skipping...\n"))
+  #   next  # Skip to the next file without overwriting
+  # }
+  
+  # Write data frames to CSV file
+  write.csv(df, outputsFinal, row.names = F, quote = T, na = '')
+}
+```
+
+## CREATE SHAPEFILES
+```{r create clean shapefiles for the kmz}
+# Use the original thalweg line that includes all sections of the braided channels
+habitatOverlayKML <- terra::intersect(thalweg, rawHabitat)
+
+# Dissolve the line feature by habitat ID.  
+thalwegKMZ <- terra::aggregate(habitatOverlayKML, by = "habitatID")
+
+# Remove extra columns
+thalwegKMZ <- thalwegKMZ[, 1]
+
+plot(thalwegKMZ)
+
+# Grab the habitat information for the braided channel parts that were removed to calculate thalweg length (only the longest channel lengths are included for one continuous thalweg)
+if (nrow(values(geoFeaturesOnly)) > 0){ # if there were braided channels (determined by the geofeatures IDs in the thalweg file)
+  
+  # This time, keep only the shortest channel 
+  geoFeaturesRevised_short <- geoFeaturesOnly %>% 
+  dplyr::group_by(featureID) %>%
+  dplyr::filter(lengthM != max(lengthM))
+
+  # Plot the short channels
+  plot(geoFeaturesRevised_short)
+  #add the long channels to check that the braided channels are "whole" again
+  plot(geoFeaturesRevised, add = TRUE)
+
+  # Overlay the habitat information
+  geoFeatKMLHabitat<- terra::intersect(geoFeaturesRevised_short, rawHabitat)
+
+  # Add length (in meters) 
+  geoFeatKMLHabitat$LengthHab <- perim(geoFeatKMLHabitat)
+
+  # # Remove the total line from the habitat id dataframe
+  # habitatID_noTotals <- head(habitatID, -1)
+  # 
+  # # Add in habitat IDs that are not part of the longProfile (if they were on the short side of a braided channel only)
+  # droppedHabId <- setdiff((unique(geoFeatKMLHabitat$habitatID)),(unique(habitatID_noTotals$habitatID)))
+  
+  # Add in habitat IDs that are not part of the longProfile (if they were on the short side of a braided channel only)
+  droppedHabId <- setdiff((unique(geoFeatKMLHabitat$habitatID)),(unique(habitatID$habitatID)))
+
+  if (length(droppedHabId) >0){
+  newRows <- data.frame(habitatID = droppedHabId, lengthM = 0, areaM2 = 0, percentLength = 0, habitat = sub("[^[:alpha:]]+", "", droppedHabId))
+
+  for (a in 1:nrow(newRows)){
+    for (z in 1:nrow(geoFeatKMLHabitat)){
+    if(newRows$habitatID[a] == geoFeatKMLHabitat$habitatID[z]){
+      newRows$lengthM[a] <- geoFeatKMLHabitat$LengthHab[z]
+      }
+    }
+  }
+
+  for (a in 1:nrow(newRows)){
+    for (z in 1:nrow(habitat2DF)){
+    if(newRows$habitatID[a] == as.character(habitat2DF$habitatID[z])){
+      newRows$areaM2[a] <- habitat2DF$areaM2[z]
+      }
+    }
+  }
+  
+  # If dry or subterranean sections of the thalweg, add in the specific columns in newRows so they can rbind  
+  # skip if entire survey was dry
+  if (entireSurveyDry == "N"){
+  
+  if ("Y" %in% dryDF$dryComment){
+    newRows$dryLengthM <- ""
+    newRows$percentDry <- ""
+  }
+  
+  if ("Y" %in% siteDirectory$subterraneanFile.[which(siteDirectory$surveyID == surveyID)]){  
+    newRows$subterraneanLengthM <- ""
+    newRows$percentSubterranean <- ""
+  }
+  
+  #habitatID2 <-rbind(habitatID_noTotals, newRows)
+  habitatID2 <-rbind(habitatID, newRows)
+
+  }
+}
+  
+if (length(droppedHabId)== 0){
+  #habitatID2 <- habitatID_noTotals
+  habitatID2 <- habitatID
+}
+
+
+if (entireSurveyDry == "N"){
+  for (a in 1:nrow(habitatID2)){
+    for (z in 1:nrow(geoFeatKMLHabitat)){
+    if(habitatID2$habitatID[a] == geoFeatKMLHabitat$habitatID[z]){
+     habitatID2$lengthM[a] <- geoFeatKMLHabitat$LengthHab[z] + habitatID2$lengthM[a]
+      }
+    }
+  } 
+  }
+
+  habitatID2$lengthM <- round(habitatID2$lengthM, 2)
+  habitatID2$areaM2 <- round(habitatID2$areaM2, 2)
+
+}
+
+# if (nrow(values(geoFeaturesOnly, dataframe= T))==0){
+#     habitatID2 <- habitatID
+#   }
+
+if (nrow(geoFeaturesOnly) == 0){
+     habitatID2 <- habitatID
+}
+# Join thalwegKMZ shapefile to the habitatID dataframe to update the attribute fields
+thalwegKMZ2 <- merge(thalwegKMZ, habitatID2, by ='habitatID')
+
+# Get rid of unnecessary columns 
+# all that should be left is habitat ID and length
+values(thalwegKMZ2)
+thalwegKMZ2<- thalwegKMZ2[,c("habitatID", "lengthM")]
+values(thalwegKMZ2)
+# Plot to check - braided channels should now be included
+plot(thalwegKMZ2)
+
+
+# Clean up the habitat polygon - we make 2 - one to use in the Google kml file that has the geoFeatures area removed so we can see them 
+# fields should be habitat, areaM2, percentDry, habitat
+
+# Clean up "whole" habitat layer for shapefile (no geofeatures removed)
+fullHabitatKMZ <- merge(rawHabitat, habitatID2, by ='habitatID')
+
+# Add in percentDry column = 0 if that field is not currently in the survey and no dry areas
+if(is.null(fullHabitatKMZ$percentDry)) {
+  fullHabitatKMZ$percentDry <- 0
+}
+
+fullHabitatKMZ<- fullHabitatKMZ[,c("habitatID", "areaM2", "percentDry", "habitat")]
+plot(fullHabitatKMZ)
+values(fullHabitatKMZ)
+
+# Create kml file - erase geofeatures so the layers site correctly in Google Earth
+if (file.exists(paste(paste(filePath, geoFeaturesShapefileName, sep = "/"), ".shp", sep = ""))){
+  # Remove the areas from the habitat Id layer that include geomorpth features
+  habitatKMZ <- habitat_allGeoFeatRemoved
+  if ("Y" %in% dryDF$dryComment){ # add in the percent of the habitat that is dry
+    habitatKMZ <- merge(habitat_allGeoFeatRemoved, habitatID2, by = 'habitatID')
+    habitatKMZ<- habitatKMZ[,c("habitatID", "areaM2", "percentDry", "habitat")]
+  }
+
+ # if not dry...  
+ habitatKMZ <- merge(habitat_allGeoFeatRemoved, habitatID2, by ='habitatID')
+ # Add in percentDry column = 0
+ if(is.null(habitatKMZ$percentDry)) {
+    habitatKMZ$percentDry <- 0
+}
+
+ habitatKMZ<- habitatKMZ[,c("habitatID", "areaM2", "percentDry", "habitat")]
+ plot(habitatKMZ)
+ values(habitatKMZ)
+} else { #if there are no geoFeatures to remove
+ habitatKMZ <- fullHabitatKMZ
+ plot(habitatKMZ)
+ values(habitatKMZ)
+}
+
+plot(habitatKMZ)
+values(habitatKMZ)
+
+
+# Clean up the S1S2 points shapefile, add the staff gauge
+S1S2 <- surveyPts[grepl("Sensor", surveyPts$mapCode),]
+if (surveyID == "WLOU_2018"|surveyID == "SYCA_2018"|surveyID == "HOPB_2020"){
+  S1S2 <- surveyPts[grepl("Sensor", surveyPts$mapCode),]
+}
+
+if (nrow(S1S2) < 2){ # switched to using the transect points in Jan 2024
+  S1S2 <- surveyPts[grepl("S1_THL|S2_THL", surveyPts$name),]
+  
+  # Remove the _THL from the name
+  S1S2$name <- gsub("_THL","", S1S2$name)
+  
+  # Change the mapCode to "sensor"
+  S1S2$mapCode <- "Sensor"
+}
+
+staffGauge <- surveyPts[grepl("Gauge", surveyPts$mapCode),] # no S1/S2 at REDB  sensorsKMZ <- staffGauge
+if (surveyID == "POSE_2017"){
+  staffGauge <- surveyPts[grepl("STF", surveyPts$name),]
+}
+sensorsKMZ <- rbind(S1S2,staffGauge)
+sensorsKMZ <- sensorsKMZ[,c("name", "latitude", "longitude", "easting", "northing", "elevationM", "mapCode")]
+
+# Files should be name, latitude, longitude, easting, northing, elevationM, and mapCode 
+plot(sensorsKMZ)
+values(sensorsKMZ)
+
+# Clean up geoMorphicFeatures (polygons)
+# file fields should be feature, comment
+if (file.exists(paste(paste(filePath,geoFeaturesShapefileName, sep = "/"), ".shp", sep = ""))){
+  plot(geoFeatures)
+  values(geoFeatures)
+  geoFeaturesKMZ<- geoFeatures[,c("featureID", "comment")]
+  values(geoFeatures)
+}
+
+# Clean up geoMorphicFeatures (points)
+# name, latitude, longitude, northing, easting, elevationM, mapCode
+geoFeatPointsKMZ <- surveyPts[grepl("WFT|CUL|TRB|TRI|MAR|WEIR_L", surveyPts$name),]
+if (nrow(geoFeatPointsKMZ) > 0){
+  geoFeatPointsKMZ<- geoFeatPointsKMZ[,c("name", "latitude", "longitude", "easting", "northing", "elevationM", "mapCode")]
+  values(geoFeatPointsKMZ)
+  plot(geoFeatPointsKMZ)
+}
+
+# Pull out transects
+# Name, northing, easting, lat, long, elevation, mapCode
+transectsKMZ <- surveyPts[grepl("Transect", surveyPts$mapCode),] 
+transectsKMZ<- transectsKMZ[,c("name", "latitude", "longitude", "easting", "northing", "elevationM", "mapCode")]
+plot(transectsKMZ)
+values(transectsKMZ)
+
+
+# Export shapefiles
+# change to sf object #write shapefile, this call overwrites
+thalwegKMZ2SF <- as_sf(thalwegKMZ2)
+write_sf(thalwegKMZ2SF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorph_thalweg_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+
+fullHabitatKMZSF <- as_sf(fullHabitatKMZ)
+write_sf(fullHabitatKMZSF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorph_habitatUnits_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+
+sensorsKMZSF <- as_sf(sensorsKMZ)
+write_sf(sensorsKMZSF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorph_sensors_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+
+transectsKMZSF <- as_sf(transectsKMZ)
+write_sf(transectsKMZSF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorph_transects_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+
+if (file.exists(paste(paste(filePath,geoFeaturesShapefileName, sep="/"),".shp",sep=""))){
+  geoFeaturesKMZSF <- as_sf(geoFeaturesKMZ)
+  write_sf(geoFeaturesKMZSF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorph_geomorphicFeaturePolygons_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+}  
+  
+if (nrow(geoFeatPointsKMZ) > 0){  
+  geoFeatPointsKMZSF <- as_sf(geoFeatPointsKMZ)  
+  write_sf(geoFeatPointsKMZSF,
+         paste0(outPathZip,"/",domain,'_',site,'_geomorphicFeaturePoints_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+}  
+
+
+## habitatUnits KMZ gets sent to the Processed_Data folder to make the map
+habitatKMZSF <- as_sf(habitatKMZ)
+write_sf(habitatKMZSF,
+         paste0(filePath,"/",domain,'_',site,'_geomorph_habitatUnitsKMZ_',surveyDate,".shp"), layer_options = "ENCODING=UTF-8")
+
+# # This code does not overwrite existing shapefiles and so you will need to delete old files first
+# writeVector(thalwegKMZ2, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_thalweg_',surveyDate), "ESRI Shapefile", overwrite= T)
+# writeVector(habitatKMZ,filename = filePath, layer= paste0(domain,'_',site,'_geomorph_habitatUnitsKMZ_',surveyDate), "ESRI Shapefile", overwrite = T)
+# writeVector(fullHabitatKMZ, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_habitatUnits_',surveyDate), "ESRI Shapefile", overwrite= T)
+# writeVector(sensorsKMZ, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_sensors_',surveyDate), "ESRI Shapefile", overwrite = T)
+# writeVector(transectsKMZ, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_transects_',surveyDate), "ESRI Shapefile", overwrite = T)
+# 
+# if (file.exists(paste(paste(filePath,geoFeaturesShapefileName, sep="/"),".shp",sep=""))){
+#   writeVector(geoFeaturesKMZ, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_geomorphicFeaturePolygons_',surveyDate), "ESRI Shapefile", overwrite = T)
+# }
+# 
+# if (nrow(geoFeatPointsKMZ) > 0){
+#   writeVector(geoFeatPointsKMZ, filename = outPathZip, layer= paste0(domain,'_',site,'_geomorph_geomorphicFeaturePoints_',surveyDate), "ESRI Shapefile", overwrite = T)
+# }
+```
+
+## ZIP L0 and L4 FILES
+```{r zip files}
+## Zip files to upload to Google Cloud Services (GCS) bucket
+
+# L0 - any .ssf files from Trimble
+# L4 - shapefiles, field survey notes, post-processing notes, pdf map, kmz map 
+# outPathZip folder established at top - should point to L4 folder
+
+## Zip L4 data
+# List all files in L4 folder
+all_files <- list.files(outPathZip, full.names = TRUE)
+
+# Filter out .csv and .txt files (including outdated survey note files) and exclude temp files
+wantFiles <- all_files[
+  !grepl("\\.csv$|\\.txt$", all_files) & !grepl("^~\\$", basename(all_files))
+]
+
+# Check all files are included
+# Define required files regex
+required_files <- c(
+  "geomorph_geomorphicFeaturePolygons",
+  "geomorph_habitatUnits",
+  "geomorph_habitatUnitsKMZ",
+  "geomorph_sensors",
+  "geomorph_thalweg",
+  "geomorph_transect",
+  "geomorphicFeaturePoints",
+  "geomorph_pdf_map",
+  "geomorph_kmz_map",
+  "postprocessingNotes",
+  "surveyNotes"
+)
+
+# Check if any files are missing
+missing_files <- required_files[!sapply(required_files, function(p) {
+  any(grepl(p, basename(wantFiles)))
+})]
+
+# If missing files, pause and investigate
+if (length(missing_files) > 0) {
+  stop("Missing required files matching: ", paste(missing_files, collapse = ", "))
+} else {
+  cat("All required files are present for", surveyID, "\n")
+}
+
+# Zip folder file name
+zippedL4 <- file.path(outPathZip, paste0("NEON_", domain, "_", site, "_GEOMORPH_", surveyDate, "_L4_VA.zip"))
+
+# Zip without including nested folders
+tryCatch({
+  zipr(zipfile = zippedL4, files = wantFiles)
+  cat("Successfully zipped files for", surveyID, "\n")
+}, error = function(e) {
+  message("Failed to zip files for ", surveyID, ": ", e$message)
+})
+
+## Zip L0 raw Trimble file
+# If trimble files exist, zip the L0 files from the specified location
+if(trimbleFileName != "" & rawTrimbleFilePath != "") {
+  # List all files from the trimble location
+  t_file <- list.files(rawTrimbleFilePath, pattern = "\\.ssf$", full.names = TRUE)
+  
+  # Define and create the L0 zip file
+  outPathZipL0 <- sub("L4", "L0", outPathZip)
+  zippedL0 <- file.path(outPathZipL0, paste0("NEON_", domain, "_", site, "_GEOMORPH_", surveyDate, "_L0_VA.zip"))
+  
+  # Zip file
+  zipr(zippedL0, files = t_file, recurse = FALSE, root = outPathZipL0)
+  cat("Successfully zipped L0 files for", surveyID, "\n")
+}
+```
+
