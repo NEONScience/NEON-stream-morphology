@@ -25,10 +25,11 @@
 #  N. Harrison (2018-02-09): Added staff gauge calculations.
 #  N. Harrison (2018-08-27): Updated script to import a new survey .csv file that contains raw easting, northing, and elevation coordinates.  Transects metrics are now calculated using raw values to avoid any potential transformation bias incorporated during post-processing.  Added calculations to offset discharge cross-section gauge height values in instances of negative stage transformations.   
 #  N. Harrison (2020-02-28): Removed gsub functionality to automatically select NorthStart, EastStart, and ReferenceDistance coordinates (it never really worked) - user must now select these points manually for each transect; added feature to transect plots where field bankfull calls are highlighted to validate bankfull width calculations.
-#  N. Harrison (2020-03-31): Created template script; added API functionality to download and read in data from the NEON Data Portal via neonUtilities package; removed staff gauge correction lines for discharge transects (this is now done in the hydrologic controls script); updated @param text
-#  N. Harrison (2021-06-14): Converted script from .RMD to .R format
-#  N. Harrison (2025-06-05): Updated outputs to produce geo_transectBankfullWidths_in ingest table
-#  N. Harrison (2025-07-17): Updated outputs to produce surveyPts_in ingest table 
+#  N. Harrison (2020-03-31): Created template script; added API functionality to download and read in data from the NEON Data Portal via neonUtilities package; removed staff gauge correction lines for discharge transects (this is now done in the hydrologic controls script); updated @param text.
+#  N. Harrison (2021-06-14): Converted script from .RMD to .R format.
+#  N. Harrison (2025-06-05): Updated outputs to produce geo_transectBankfullWidths_in ingest table.
+#  N. Harrison (2025-07-17): Updated outputs to produce surveyPts_in ingest table.
+#  N. Harrison (2026-04-15): Replaced rdgal package (retired) with sf package to read in .shp files.
 
 #########################################################################################################################
 
@@ -36,26 +37,26 @@
 # install.packages("neonUtilities")
 # install.packages("data.table")
 # install.packages("calibrate")
-# install.packages("rgdal")
+# install.packages("sf")
 # install.packages("ploty")
 
 #Load packages
 library(neonUtilities)
 library(data.table)
 library(calibrate)
-library(rgdal)
+library(sf)
 library(plotly)
 
 #Set variables.
 
 #NEON Domain number (ex: D01).
-domainID<-'D02' 
+domainID<-'D16' 
 
 #Four-digit NEON site code (ex: HOPB).
-siteID <- 'LEWI'  
+siteID <- 'MCRA'  
 
 #The end date of the geomorphology survey (YYYYMMDD).  
-surveyDate<-'20241126'
+surveyDate<-'20250715'
 eventID<-paste(siteID,substr(surveyDate, start=1, stop=6), sep=".")
 
 #Stipulate 4-digit site code, underscore, and survey year (ex: HOPB_2017). 
@@ -80,7 +81,7 @@ siteDirectory<-read.csv('N:/Science/AQU/Geomorphology_Survey_Data/inputDirectory
 #Creates dataframe that contains survey data.
 filePath <- siteDirectory$filePath[which(siteDirectory$surveyID==surveyID)]
 surveyShapefileName <- siteDirectory$surveyShapefileName[which(siteDirectory$surveyID==surveyID)]
-surveyPts <- readOGR(filePath,surveyShapefileName)
+surveyPts <- st_read(paste(filePath,"/",surveyShapefileName,".shp",sep=""))
 surveyPtsDF <- as.data.frame(surveyPts)
 
 #surveyPtsDF <- read.csv(paste0(getwd(),"/",surveyShapefileName,".csv")) #backup plan if the .dbf path isn't working and the .csv file has already been created and placed in the processed_survey_data folder...
@@ -143,14 +144,14 @@ if("Transect_DSC1" %in% surveyPtsDF$mapCode){
 }
 
 if("Transect_DSC" %in% surveyPtsDF$mapCode){
-  SurveyedDSC1<-TRUE
+  SurveyedDSC<-TRUE
   dischargePointsXS1=subset(surveyPtsDF,mapCode=="Transect_DSC")
   dischargePointsXS1<-dischargePointsXS1[
-    with(dischargePointsXS1,order(dischargePointsXS1$N)), #if transect runs east-west, charge order to dischargePointsXS1$E
+    with(dischargePointsXS1,order(dischargePointsXS1$E)), #if transect runs east-west, charge order to dischargePointsXS1$E
     ]
   rownames(dischargePointsXS1)<-seq(length=nrow(dischargePointsXS1))
 }else {
-  SurveyedDSC1<-FALSE
+  SurveyedDSC<-FALSE
 }
 
 if("Transect_DSC2" %in% surveyPtsDF$mapCode){
@@ -180,7 +181,7 @@ if("Transect_AP1" %in% surveyPtsDF$mapCode){
   SurveyedAP1<-TRUE
   AP1Points=subset(surveyPtsDF,mapCode=="Transect_AP1") 
   AP1Points<-AP1Points[
-    with(AP1Points,order(AP1Points$N)), #if transect runs east-west, charge order to AP1Points$E
+    with(AP1Points,order(AP1Points$E)), #if transect runs east-west, charge order to AP1Points$E
     ]
   rownames(AP1Points)<-seq(length=nrow(AP1Points))
 }else {
@@ -301,7 +302,7 @@ if("Transect_USR" %in% surveyPtsDF$mapCode){
   SurveyedUSR<-TRUE
   USRPoints=subset(surveyPtsDF,mapCode=="Transect_USR") 
   USRPoints<-USRPoints[
-    with(USRPoints,order(USRPoints$N)), #if transect runs east-west, charge order to USRPoints$E
+    with(USRPoints,order(USRPoints$E)), #if transect runs east-west, charge order to USRPoints$E
     ]
   rownames(USRPoints)<-seq(length=nrow(USRPoints))
 }else {
@@ -312,7 +313,7 @@ if("Transect_S1" %in% surveyPtsDF$mapCode){
   SurveyedS1<-TRUE
   S1Points=subset(surveyPtsDF,mapCode=="Transect_S1") 
   S1Points<-S1Points[
-    with(S1Points,order(S1Points$N)), #if transect runs east-west, charge order to S1Points$E
+    with(S1Points,order(S1Points$E)), #if transect runs east-west, charge order to S1Points$E
     ]
   rownames(S1Points)<-seq(length=nrow(S1Points))
 }else {
@@ -340,10 +341,10 @@ font<-list(size=12,color='black')
 
 ############# Discharge XS1 transect  ##################################################################################################
 
-if(SurveyedDSC1){
+if(SurveyedDSC){
   
-  DSCnorthEastStart<-42 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  DSCreference<-40 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  DSCnorthEastStart<-34 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  DSCreference<-29 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   dischargeXS1NorthStart<-dischargePointsXS1$N[DSCnorthEastStart]
   dischargeXS1EastStart<-dischargePointsXS1$E[DSCnorthEastStart]
@@ -445,8 +446,8 @@ if(SurveyedDSC2==TRUE){
 
 if(SurveyedAP1){
   
-  AP1northEastStart<-41 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  AP1reference<-31 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  AP1northEastStart<-26 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  AP1reference<-24 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   AP1NorthStart<-AP1Points$N[AP1northEastStart]
   AP1EastStart<-AP1Points$E[AP1northEastStart]
@@ -606,8 +607,8 @@ if(SurveyedAP3==TRUE){
 
 if(SurveyedAP4){
   
-  AP4northEastStart<-47 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  AP4reference<-35 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  AP4northEastStart<-1 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  AP4reference<-34 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   AP4NorthStart<-AP4Points$N[AP4northEastStart]
   AP4EastStart<-AP4Points$E[AP4northEastStart]
@@ -810,8 +811,8 @@ if(SurveyedAP7==TRUE){
 
 if(SurveyedAP8){
   
-  AP8northEastStart<-41 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  AP8reference<-38 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  AP8northEastStart<-28 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  AP8reference<-27 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   AP8NorthStart<-AP8Points$N[AP8northEastStart]
   AP8EastStart<-AP8Points$E[AP8northEastStart]
@@ -965,8 +966,8 @@ if(SurveyedAP10==TRUE){
 
 if(SurveyedS1){
   
-  S1northEastStart<-44 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  S1reference<-44 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  S1northEastStart<-32 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  S1reference<-32 ##Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   S1NorthStart<-S1Points$N[S1northEastStart]
   S1EastStart<-S1Points$E[S1northEastStart]
@@ -1017,8 +1018,8 @@ if(SurveyedS1==TRUE){
 
 if(SurveyedS2){
   
-  S2northEastStart<-39 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  S2reference<-3 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  S2northEastStart<-1 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  S2reference<-1 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   S2NorthStart<-S2Points$N[S2northEastStart]
   S2EastStart<-S2Points$E[S2northEastStart]
@@ -1068,8 +1069,8 @@ if(SurveyedS2==TRUE){
 
 if(SurveyedUSR){
   
-  USRnorthEastStart<-35 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  USRreference<-33 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  USRnorthEastStart<-29 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  USRreference<-2 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   USRNorthStart<-USRPoints$N[USRnorthEastStart]
   USREastStart<-USRPoints$E[USRnorthEastStart]
@@ -1119,8 +1120,8 @@ if(SurveyedUSR==TRUE){
 
 if(SurveyedDSR){
   
-  DSRnorthEastStart<-38 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
-  DSRreference<-34 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
+  DSRnorthEastStart<-1 #Manually select the row of the mapped point that is furthest along the left bank side of the channel
+  DSRreference<-5 #Manually select the row of the mapped point taken on a pin [preferably LB pin but RB works too]; if a pin shot is not available choose the mapped point furthest into the left bank side of the channel
   
   DSRNorthStart<-DSRPoints$N[DSRnorthEastStart]
   DSREastStart<-DSRPoints$E[DSRnorthEastStart]
@@ -1315,11 +1316,19 @@ surveyPts_in$locationID<-siteID
 surveyPts_in$startDate<-geoSummaryTable$startDate
 surveyPts_in$surveyEndDate<-geoSummaryTable$endDate
 surveyPts_in$eventID<-geoSummaryTable$eventID
+
 surveyPts_in$surveyPtID<-surveyPtsDF$name[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
 surveyPts_in$relativeEasting<-surveyPtsDF$E[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
 surveyPts_in$relativeNorthing<-surveyPtsDF$N[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
 surveyPts_in$relativeHeight<-surveyPtsDF$H[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
 surveyPts_in$mapCode<-surveyPtsDF$mapCode[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$mapCode == "Gauge"]
+
+#surveyPts_in$surveyPtID<-surveyPtsDF$name[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$name == "SP_1.10M"] #two gauges were mapped during this survey so using the shot taken at 1.10M 
+#surveyPts_in$relativeEasting<-surveyPtsDF$E[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$name == "SP_1.10M"] #two gauges were mapped during this survey so using the shot taken at 1.10M 
+#surveyPts_in$relativeNorthing<-surveyPtsDF$N[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$name == "SP_1.10M"] #two gauges were mapped during this survey so using the shot taken at 1.10M 
+#surveyPts_in$relativeHeight<-surveyPtsDF$H[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$name == "SP_1.10M"] #two gauges were mapped during this survey so using the shot taken at 1.10M 
+#surveyPts_in$mapCode<-surveyPtsDF$mapCode[surveyPtsDF$mapCode=="Transect_DSC" | surveyPtsDF$name == "SP_1.10M"] #two gauges were mapped during this survey so using the shot taken at 1.10M 
+
 surveyPts_in$processedSurveyVersion<-geoSummaryTable$processedSurveyVersion
 surveyPts_in$remarks<-NA
 surveyPts_in$dataQF<-NA
